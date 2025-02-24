@@ -6,5 +6,7 @@ Pillow  # PIL is imported as Pillow
 pandas
 lineless-table-rec  # If this is a custom package, ensure it's available
 rapid-table==1.0.3
+rapid_table[torch]
+torch==2.5.1
 rapidocr-onnxruntime
 table-cls  # If this is a custom package, ensure it's available
