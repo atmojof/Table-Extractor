@@ -4,6 +4,11 @@ import numpy as np
 import streamlit as st
 from PIL import Image
 import pandas as pd
+import io
+
+# For converting HTML table to Excel
+from bs4 import BeautifulSoup
+from openpyxl import Workbook
 
 # Import recognition engines and helper functions
 from lineless_table_rec import LinelessTableRecognition
@@ -20,7 +25,6 @@ st.set_page_config(layout="wide")
 # Advanced Settings (Sidebar)
 # -----------------------------------------------------------------------------
 st.sidebar.header("Advanced Settings")
-# Remove the unitable option since we don't have a vocab file for it.
 table_engine_type = st.sidebar.selectbox(
     "Select Recognition Table Engine",
     ["auto",
@@ -91,7 +95,7 @@ def load_engines():
 engines = load_engines()
 
 # -----------------------------------------------------------------------------
-# Helper Functions
+# Helper Functions for OCR/Recognition
 # -----------------------------------------------------------------------------
 def trans_char_ocr_res(ocr_res):
     """Transform OCR results for character-level recognition."""
@@ -171,6 +175,58 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
     return complete_html, table_boxes_img, ocr_boxes_img, all_elapse
 
 # -----------------------------------------------------------------------------
+# Helper Function: Convert HTML table to Excel with merged cells
+# -----------------------------------------------------------------------------
+def html_table_to_excel_bytes(html):
+    """
+    Parse the HTML table using BeautifulSoup and create an Excel file that
+    preserves merged cells. Returns bytes of the XLSX file.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table")
+    if table is None:
+        raise ValueError("No table found in HTML.")
+    
+    wb = Workbook()
+    ws = wb.active
+
+    current_row = 1
+    # grid to track occupied cells (for merged cells)
+    occupied = {}
+
+    for tr in table.find_all("tr"):
+        current_col = 1
+        for cell in tr.find_all(["td", "th"]):
+            # Find the next free cell in current row.
+            while (current_row, current_col) in occupied:
+                current_col += 1
+
+            text = cell.get_text(strip=True)
+            colspan = int(cell.get("colspan", 1))
+            rowspan = int(cell.get("rowspan", 1))
+            
+            # Write the cell value.
+            ws.cell(row=current_row, column=current_col, value=text)
+            
+            # Mark the cells as occupied and merge if needed.
+            if colspan > 1 or rowspan > 1:
+                start_cell = ws.cell(row=current_row, column=current_col).coordinate
+                end_cell = ws.cell(row=current_row + rowspan - 1, column=current_col + colspan - 1).coordinate
+                ws.merge_cells(f"{start_cell}:{end_cell}")
+                for i in range(current_row, current_row + rowspan):
+                    for j in range(current_col, current_col + colspan):
+                        occupied[(i, j)] = True
+            else:
+                occupied[(current_row, current_col)] = True
+
+            current_col += 1
+        current_row += 1
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+# -----------------------------------------------------------------------------
 # Main App Workflow
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
@@ -195,21 +251,23 @@ if uploaded_file is not None:
             st.markdown("### Elapsed Time")
             st.text(all_elapse)
             
-            # Parse the HTML table into a DataFrame, display it, and provide a CSV download button
+            # Instead of parsing to CSV via pandas (which loses merged cell info),
+            # convert the HTML table directly to an Excel file.
             try:
+                excel_bytes = html_table_to_excel_bytes(complete_html)
+                st.download_button(
+                    label="Download Excel (.xlsx)",
+                    data=excel_bytes,
+                    file_name="table.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                # Optionally, also display the DataFrame parsed from HTML (flat version)
                 df_list = pd.read_html(complete_html)
                 if df_list:
                     df = df_list[0]
-                    st.markdown("### Extracted Table Data")
+                    st.markdown("### Extracted Table Data (Flat View)")
                     st.dataframe(df, use_container_width=True)
-                    csv_data = df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        label="Download CSV",
-                        data=csv_data,
-                        file_name="table.csv",
-                        mime="text/csv"
-                    )
             except Exception as e:
-                st.error("Failed to parse HTML table: " + str(e))
+                st.error("Failed to convert HTML table to Excel: " + str(e))
 else:
     st.info("Please upload an image to begin.")
