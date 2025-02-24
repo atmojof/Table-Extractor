@@ -1,6 +1,6 @@
 wired_table_rec
 streamlit
-opencv-python-headless==4.8.1.78
+opencv-python-headless==4.11.0.86
 numpy
 Pillow  # PIL is imported as Pillow
 pandas
