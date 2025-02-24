@@ -46,19 +46,30 @@ uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 # -----------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def load_engines():
+    # Local model paths for OCR
     det_model_dir = {"mobile_det": "models/ocr/ch_PP-OCRv4_det_infer.onnx"}
     rec_model_dir = {"mobile_rec": "models/ocr/ch_PP-OCRv4_rec_infer.onnx"}
     
-    # Initialize table recognition engines
-    rapid_table_engine = RapidTable(RapidTableInput(model_type=ModelType.PPSTRUCTURE_ZH.value))
-    SLANet_plus_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.SLANETPLUS.value))
-    unitable_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.UNITABLE.value))
+    # Local model path for table recognition (provided by you)
+    table_rec_model_path = "models/table_rec/ch_ppstructure_mobile_v2_SLANet.onnx"
+    
+    # Initialize RapidTable engines (all using the local table_rec_model_path)
+    rapid_table_engine = RapidTable(
+        RapidTableInput(model_type=ModelType.PPSTRUCTURE_ZH.value, model_path=table_rec_model_path)
+    )
+    SLANet_plus_table_Engine = RapidTable(
+        RapidTableInput(model_type=ModelType.SLANETPLUS.value, model_path=table_rec_model_path)
+    )
+    unitable_table_Engine = RapidTable(
+        RapidTableInput(model_type=ModelType.UNITABLE.value, model_path=table_rec_model_path)
+    )
+    # Wired and Lineless engines
     wired_table_engine_v1 = WiredTableRecognition(version="v1")
     wired_table_engine_v2 = WiredTableRecognition(version="v2")
     lineless_table_engine = LinelessTableRecognition()
     table_cls = TableCls()
     
-    # Build a dictionary of OCR engines
+    # Build a dictionary of OCR engines using the local OCR model files.
     ocr_engine_dict = {}
     for det_model in det_model_dir.keys():
         for rec_model in rec_model_dir.keys():
