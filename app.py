@@ -18,12 +18,12 @@ from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 # Advanced Settings (Sidebar)
 # -----------------------------------------------------------------------------
 st.sidebar.header("Advanced Settings")
+# Remove the unitable option since we don't have a vocab file for it.
 table_engine_type = st.sidebar.selectbox(
     "Select Recognition Table Engine",
     ["auto",
      "RapidTable(SLANet)",
      "RapidTable(SLANet-plus)",
-     "RapidTable(unitable)",
      "wired_table_v2",
      "wired_table_v1",
      "lineless_table"],
@@ -38,7 +38,7 @@ row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 
 # -----------------------------------------------------------------------------
 # Main Title and Uploader (Main Body)
 # -----------------------------------------------------------------------------
-st.title("📝 Image-To-Text")
+st.title("Extract Data from Image")
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
 # -----------------------------------------------------------------------------
@@ -50,18 +50,15 @@ def load_engines():
     det_model_dir = {"mobile_det": "models/ocr/ch_PP-OCRv4_det_infer.onnx"}
     rec_model_dir = {"mobile_rec": "models/ocr/ch_PP-OCRv4_rec_infer.onnx"}
     
-    # Local model path for table recognition (provided by you)
+    # Local model path for table recognition (your SLANet model)
     table_rec_model_path = "models/table_rec/ch_ppstructure_mobile_v2_SLANet.onnx"
     
-    # Initialize RapidTable engines (all using the local table_rec_model_path)
+    # Initialize RapidTable engines (using your local SLANet model)
     rapid_table_engine = RapidTable(
         RapidTableInput(model_type=ModelType.PPSTRUCTURE_ZH.value, model_path=table_rec_model_path)
     )
     SLANet_plus_table_Engine = RapidTable(
         RapidTableInput(model_type=ModelType.SLANETPLUS.value, model_path=table_rec_model_path)
-    )
-    unitable_table_Engine = RapidTable(
-        RapidTableInput(model_type=ModelType.UNITABLE.value, model_path=table_rec_model_path)
     )
     # Wired and Lineless engines
     wired_table_engine_v1 = WiredTableRecognition(version="v1")
@@ -82,7 +79,6 @@ def load_engines():
     return {
         "rapid_table_engine": rapid_table_engine,
         "SLANet_plus_table_Engine": SLANet_plus_table_Engine,
-        "unitable_table_Engine": unitable_table_Engine,
         "wired_table_engine_v1": wired_table_engine_v1,
         "wired_table_engine_v2": wired_table_engine_v2,
         "lineless_table_engine": lineless_table_engine,
@@ -114,8 +110,6 @@ def select_table_model(img, table_engine_type, det_model, rec_model):
         return engines["rapid_table_engine"], table_engine_type
     elif table_engine_type == "RapidTable(SLANet-plus)":
         return engines["SLANet_plus_table_Engine"], table_engine_type
-    elif table_engine_type == "RapidTable(unitable)":
-        return engines["unitable_table_Engine"], table_engine_type
     elif table_engine_type == "wired_table_v1":
         return engines["wired_table_engine_v1"], table_engine_type
     elif table_engine_type == "wired_table_v2":
