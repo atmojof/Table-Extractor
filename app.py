@@ -5,7 +5,7 @@ import streamlit as st
 from PIL import Image
 import pandas as pd
 
-# Import table recognition engines and helper functions
+# Import recognition engines and helper functions
 from lineless_table_rec import LinelessTableRecognition
 from rapid_table import RapidTable, RapidTableInput
 from rapid_table.main import ModelType
@@ -14,47 +14,76 @@ from table_cls import TableCls
 from wired_table_rec import WiredTableRecognition
 from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 
-# -------------------------
-# Model & Engine Setup
-# -------------------------
-det_model_dir = {
-    "mobile_det": "models/ocr/ch_PP-OCRv4_det_infer.onnx",
-}
-rec_model_dir = {
-    "mobile_rec": "models/ocr/ch_PP-OCRv4_rec_infer.onnx",
-}
-table_engine_list = [
-    "auto",
-    "RapidTable(SLANet)",
-    "RapidTable(SLANet-plus)",
-    "RapidTable(unitable)",
-    "wired_table_v2",
-    "wired_table_v1",
-    "lineless_table"
-]
+# -----------------------------------------------------------------------------
+# Advanced settings in sidebar
+# -----------------------------------------------------------------------------
+st.sidebar.header("Advanced Settings")
+table_engine_type = st.sidebar.selectbox(
+    "Select Recognition Table Engine",
+    ["auto",
+     "RapidTable(SLANet)",
+     "RapidTable(SLANet-plus)",
+     "RapidTable(unitable)",
+     "wired_table_v2",
+     "wired_table_v1",
+     "lineless_table"],
+    index=0
+)
+small_box_cut_enhance = st.sidebar.checkbox("Box Cutting Enhancement", value=True)
+char_ocr = st.sidebar.checkbox("Character-level OCR", value=False)
+rotated_fix = st.sidebar.checkbox("Table Rotate Rec Enhancement", value=False)
+col_threshold = st.sidebar.slider("Column threshold (determine same col)", 5, 100, 15, step=5)
+row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 10, step=5)
 
-# Initialize table recognition engines
-rapid_table_engine = RapidTable(RapidTableInput(model_type=ModelType.PPSTRUCTURE_ZH.value))
-SLANet_plus_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.SLANETPLUS.value))
-unitable_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.UNITABLE.value))
-wired_table_engine_v1 = WiredTableRecognition(version="v1")
-wired_table_engine_v2 = WiredTableRecognition(version="v2")
-lineless_table_engine = LinelessTableRecognition()
-table_cls = TableCls()
+# -----------------------------------------------------------------------------
+# Main title and file uploader in body
+# -----------------------------------------------------------------------------
+st.title("📝 Image-To-Text")
+uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
-# Build a dictionary of OCR engines based on available detection and recognition models.
-ocr_engine_dict = {}
-for det_model in det_model_dir.keys():
-    for rec_model in rec_model_dir.keys():
-        key = f"{det_model}_{rec_model}"
-        ocr_engine_dict[key] = RapidOCR(
-            det_model_path=det_model_dir[det_model],
-            rec_model_path=rec_model_dir[rec_model]
-        )
+# -----------------------------------------------------------------------------
+# Cache heavy model loading so it is only loaded once per session
+# -----------------------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def load_engines():
+    det_model_dir = {"mobile_det": "models/ocr/ch_PP-OCRv4_det_infer.onnx"}
+    rec_model_dir = {"mobile_rec": "models/ocr/ch_PP-OCRv4_rec_infer.onnx"}
+    
+    # Initialize table recognition engines
+    rapid_table_engine = RapidTable(RapidTableInput(model_type=ModelType.PPSTRUCTURE_ZH.value))
+    SLANet_plus_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.SLANETPLUS.value))
+    unitable_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.UNITABLE.value))
+    wired_table_engine_v1 = WiredTableRecognition(version="v1")
+    wired_table_engine_v2 = WiredTableRecognition(version="v2")
+    lineless_table_engine = LinelessTableRecognition()
+    table_cls = TableCls()
+    
+    # Build a dictionary of OCR engines
+    ocr_engine_dict = {}
+    for det_model in det_model_dir.keys():
+        for rec_model in rec_model_dir.keys():
+            key = f"{det_model}_{rec_model}"
+            ocr_engine_dict[key] = RapidOCR(
+                det_model_path=det_model_dir[det_model],
+                rec_model_path=rec_model_dir[rec_model]
+            )
+    
+    return {
+        "rapid_table_engine": rapid_table_engine,
+        "SLANet_plus_table_Engine": SLANet_plus_table_Engine,
+        "unitable_table_Engine": unitable_table_Engine,
+        "wired_table_engine_v1": wired_table_engine_v1,
+        "wired_table_engine_v2": wired_table_engine_v2,
+        "lineless_table_engine": lineless_table_engine,
+        "table_cls": table_cls,
+        "ocr_engine_dict": ocr_engine_dict,
+    }
 
-# -------------------------
+engines = load_engines()
+
+# -----------------------------------------------------------------------------
 # Helper Functions
-# -------------------------
+# -----------------------------------------------------------------------------
 def trans_char_ocr_res(ocr_res):
     """Transform OCR results for character-level recognition."""
     word_result = []
@@ -66,27 +95,27 @@ def trans_char_ocr_res(ocr_res):
 
 def select_ocr_model(det_model, rec_model):
     """Return the OCR engine given model keys."""
-    return ocr_engine_dict[f"{det_model}_{rec_model}"]
+    return engines["ocr_engine_dict"][f"{det_model}_{rec_model}"]
 
 def select_table_model(img, table_engine_type, det_model, rec_model):
     """Select and return a table recognition engine based on the chosen type."""
     if table_engine_type == "RapidTable(SLANet)":
-        return rapid_table_engine, table_engine_type
+        return engines["rapid_table_engine"], table_engine_type
     elif table_engine_type == "RapidTable(SLANet-plus)":
-        return SLANet_plus_table_Engine, table_engine_type
+        return engines["SLANet_plus_table_Engine"], table_engine_type
     elif table_engine_type == "RapidTable(unitable)":
-        return unitable_table_Engine, table_engine_type
+        return engines["unitable_table_Engine"], table_engine_type
     elif table_engine_type == "wired_table_v1":
-        return wired_table_engine_v1, table_engine_type
+        return engines["wired_table_engine_v1"], table_engine_type
     elif table_engine_type == "wired_table_v2":
-        return wired_table_engine_v2, table_engine_type
+        return engines["wired_table_engine_v2"], table_engine_type
     elif table_engine_type == "lineless_table":
-        return lineless_table_engine, table_engine_type
+        return engines["lineless_table_engine"], table_engine_type
     elif table_engine_type == "auto":
-        cls, _ = table_cls(img)
+        cls, _ = engines["table_cls"](img)
         if cls == 'wired':
-            return wired_table_engine_v2, "wired_table_v2"
-        return lineless_table_engine, "lineless_table"
+            return engines["wired_table_engine_v2"], "wired_table_v2"
+        return engines["lineless_table_engine"], "lineless_table"
 
 def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr, rotated_fix, col_threshold, row_threshold):
     # For OCR we use the mobile_det and mobile_rec models.
@@ -134,25 +163,9 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
     complete_html = format_html(html)
     return complete_html, table_boxes_img, ocr_boxes_img, all_elapse
 
-# -------------------------
-# Streamlit App Interface
-# -------------------------
-st.set_page_config(page_title="Table Structure Recognition Demo", layout="wide")
-st.title("Table Structure Recognition Demo")
-
-st.markdown("""
-This demo uses RapidTable, WiredTable, and LinelessTable recognition engines along with RapidOCR to extract table structures from images.
-""")
-
-# Sidebar options
-uploaded_file = st.sidebar.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
-table_engine_type = st.sidebar.selectbox("Select Recognition Table Engine", table_engine_list, index=0)
-small_box_cut_enhance = st.sidebar.checkbox("Box Cutting Enhancement", value=True)
-char_ocr = st.sidebar.checkbox("Character-level OCR", value=False)
-rotated_fix = st.sidebar.checkbox("Table Rotate Rec Enhancement", value=False)
-col_threshold = st.sidebar.slider("Column threshold (determine same col)", 5, 100, 15, step=5)
-row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 10, step=5)
-
+# -----------------------------------------------------------------------------
+# Main App Workflow
+# -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         img = Image.open(uploaded_file).convert("RGB")
@@ -175,11 +188,14 @@ if uploaded_file is not None:
             st.markdown("### Elapsed Time")
             st.text(all_elapse)
             
-            # Attempt to parse the HTML table into a DataFrame and provide a CSV download button.
+            # Parse the complete_html into a DataFrame and show it as a table
             try:
                 df_list = pd.read_html(complete_html)
                 if df_list:
                     df = df_list[0]
+                    st.markdown("### Extracted Table Data")
+                    st.dataframe(df)
+                    # Provide a CSV download button
                     csv_data = df.to_csv(index=False).encode("utf-8")
                     st.download_button(
                         label="Download CSV",
@@ -188,6 +204,6 @@ if uploaded_file is not None:
                         mime="text/csv"
                     )
             except Exception as e:
-                st.error("CSV download not available: " + str(e))
+                st.error("Failed to parse HTML table: " + str(e))
 else:
     st.info("Please upload an image to begin.")
