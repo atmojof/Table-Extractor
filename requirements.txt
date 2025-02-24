@@ -11,3 +11,4 @@ torch==2.5.1
 rapidocr-onnxruntime
 table-cls  # If this is a custom package, ensure it's available
 lxml
+bs4
