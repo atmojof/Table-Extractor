@@ -5,8 +5,9 @@ import streamlit as st
 from PIL import Image
 import pandas as pd
 import io
+import os
 
-# For converting HTML table to Excel
+# For converting HTML table to Excel with merged cells
 from bs4 import BeautifulSoup
 from openpyxl import Workbook
 
@@ -18,8 +19,6 @@ from rapidocr_onnxruntime import RapidOCR
 from table_cls import TableCls
 from wired_table_rec import WiredTableRecognition
 from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
-
-st.set_page_config(layout="wide")
 
 # -----------------------------------------------------------------------------
 # Advanced Settings (Sidebar)
@@ -42,11 +41,53 @@ col_threshold = st.sidebar.slider("Column threshold (determine same col)", 5, 10
 row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 10, step=5)
 
 # -----------------------------------------------------------------------------
-# Main Title and Uploader (Main Body)
+# Main Title and File Uploader (Main Body)
 # -----------------------------------------------------------------------------
 st.title("Extract Data from Image")
+
+# First, provide an uploader in the main body.
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
+# If no image is uploaded, show sample images (thumbnails) for selection.
+if uploaded_file is None and "selected_sample" not in st.session_state:
+    st.info("No image uploaded. Please select one of the sample images below.")
+    # List sample image filenames (adjust the list as needed)
+    sample_folder = "sample"
+    sample_files = [f for f in os.listdir(sample_folder) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+    if sample_files:
+        cols = st.columns(len(sample_files))
+        for i, filename in enumerate(sample_files):
+            filepath = os.path.join(sample_folder, filename)
+            try:
+                sample_img = Image.open(filepath).convert("RGB")
+            except Exception as e:
+                st.error(f"Error loading sample image {filename}: {e}")
+                continue
+            with cols[i]:
+                st.image(sample_img, caption=filename, use_container_width=True)
+                if st.button("Select", key=filepath):
+                    st.session_state.selected_sample = filepath
+    else:
+        st.info("No sample images found in the sample folder.")
+
+# Decide which image to use: uploaded file takes precedence over sample.
+if uploaded_file is not None:
+    try:
+        input_img = Image.open(uploaded_file).convert("RGB")
+    except Exception as e:
+        st.error("Error loading uploaded image: " + str(e))
+elif "selected_sample" in st.session_state:
+    try:
+        input_img = Image.open(st.session_state.selected_sample).convert("RGB")
+    except Exception as e:
+        st.error("Error loading sample image: " + str(e))
+else:
+    input_img = None
+
+# Display the chosen image (if available)
+if input_img is not None:
+    st.image(input_img, caption="Selected Image", use_container_width=True)
+    
 # -----------------------------------------------------------------------------
 # Cache Heavy Engine Loading
 # -----------------------------------------------------------------------------
@@ -175,12 +216,12 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
     return complete_html, table_boxes_img, ocr_boxes_img, all_elapse
 
 # -----------------------------------------------------------------------------
-# Helper Function: Convert HTML table to Excel with merged cells
+# Helper Function: Convert HTML table to Excel (preserving merged cells)
 # -----------------------------------------------------------------------------
 def html_table_to_excel_bytes(html):
     """
-    Parse the HTML table using BeautifulSoup and create an Excel file that
-    preserves merged cells. Returns bytes of the XLSX file.
+    Parse the HTML table using BeautifulSoup and create an Excel workbook with merged cells.
+    Returns the Excel file as bytes.
     """
     soup = BeautifulSoup(html, "lxml")
     table = soup.find("table")
@@ -191,13 +232,12 @@ def html_table_to_excel_bytes(html):
     ws = wb.active
 
     current_row = 1
-    # grid to track occupied cells (for merged cells)
+    # Track occupied cells for merged regions.
     occupied = {}
-
     for tr in table.find_all("tr"):
         current_col = 1
         for cell in tr.find_all(["td", "th"]):
-            # Find the next free cell in current row.
+            # Move to next free column
             while (current_row, current_col) in occupied:
                 current_col += 1
 
@@ -205,10 +245,9 @@ def html_table_to_excel_bytes(html):
             colspan = int(cell.get("colspan", 1))
             rowspan = int(cell.get("rowspan", 1))
             
-            # Write the cell value.
             ws.cell(row=current_row, column=current_col, value=text)
             
-            # Mark the cells as occupied and merge if needed.
+            # Mark cells as occupied and merge if needed.
             if colspan > 1 or rowspan > 1:
                 start_cell = ws.cell(row=current_row, column=current_col).coordinate
                 end_cell = ws.cell(row=current_row + rowspan - 1, column=current_col + colspan - 1).coordinate
@@ -229,45 +268,38 @@ def html_table_to_excel_bytes(html):
 # -----------------------------------------------------------------------------
 # Main App Workflow
 # -----------------------------------------------------------------------------
-if uploaded_file is not None:
-    try:
-        img = Image.open(uploaded_file).convert("RGB")
-    except Exception as e:
-        st.error("Error loading image: " + str(e))
-    else:
-        st.image(img, caption="Uploaded Image", use_container_width=True)
-        if st.button("Run Recognition"):
-            with st.spinner("Processing image..."):
-                complete_html, table_boxes_img, ocr_boxes_img, all_elapse = process_image(
-                    img, small_box_cut_enhance, table_engine_type,
-                    char_ocr, rotated_fix, col_threshold, row_threshold
-                )
-            st.markdown("### Recognized Table (HTML)")
-            st.markdown(complete_html, unsafe_allow_html=True)
-            st.markdown("### Table Recognition Boxes")
-            st.image(table_boxes_img, use_container_width=True)
-            st.markdown("### OCR Boxes")
-            st.image(ocr_boxes_img, use_container_width=True)
-            st.markdown("### Elapsed Time")
-            st.text(all_elapse)
-            
-            # Instead of parsing to CSV via pandas (which loses merged cell info),
-            # convert the HTML table directly to an Excel file.
-            try:
-                excel_bytes = html_table_to_excel_bytes(complete_html)
-                st.download_button(
-                    label="Download Excel (.xlsx)",
-                    data=excel_bytes,
-                    file_name="table.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                # Optionally, also display the DataFrame parsed from HTML (flat version)
-                df_list = pd.read_html(complete_html)
-                if df_list:
-                    df = df_list[0]
-                    st.markdown("### Extracted Table Data (Flat View)")
-                    st.dataframe(df, use_container_width=True)
-            except Exception as e:
-                st.error("Failed to convert HTML table to Excel: " + str(e))
+if input_img is not None:
+    if st.button("Run Recognition"):
+        with st.spinner("Processing image..."):
+            complete_html, table_boxes_img, ocr_boxes_img, all_elapse = process_image(
+                input_img, small_box_cut_enhance, table_engine_type,
+                char_ocr, rotated_fix, col_threshold, row_threshold
+            )
+        st.markdown("### Recognized Table (HTML)")
+        st.markdown(complete_html, unsafe_allow_html=True)
+        st.markdown("### Table Recognition Boxes")
+        st.image(table_boxes_img, use_container_width=True)
+        st.markdown("### OCR Boxes")
+        st.image(ocr_boxes_img, use_container_width=True)
+        st.markdown("### Elapsed Time")
+        st.text(all_elapse)
+        
+        # Convert the HTML table to an Excel file preserving merged cells.
+        try:
+            excel_bytes = html_table_to_excel_bytes(complete_html)
+            st.download_button(
+                label="Download Excel (.xlsx)",
+                data=excel_bytes,
+                file_name="table.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            # Optionally, also show a flat DataFrame view parsed from the HTML.
+            df_list = pd.read_html(complete_html)
+            if df_list:
+                df = df_list[0]
+                st.markdown("### Extracted Table Data (Flat View)")
+                st.dataframe(df, use_container_width=True)
+        except Exception as e:
+            st.error("Failed to convert HTML table to Excel: " + str(e))
 else:
-    st.info("Please upload an image to begin.")
+    st.info("Please upload an image or select a sample image to begin.")
