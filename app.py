@@ -15,7 +15,7 @@ from wired_table_rec import WiredTableRecognition
 from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 
 # -----------------------------------------------------------------------------
-# Advanced settings in sidebar
+# Advanced Settings (Sidebar)
 # -----------------------------------------------------------------------------
 st.sidebar.header("Advanced Settings")
 table_engine_type = st.sidebar.selectbox(
@@ -36,13 +36,13 @@ col_threshold = st.sidebar.slider("Column threshold (determine same col)", 5, 10
 row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 10, step=5)
 
 # -----------------------------------------------------------------------------
-# Main title and file uploader in body
+# Main Title and Uploader (Main Body)
 # -----------------------------------------------------------------------------
 st.title("📝 Image-To-Text")
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
 # -----------------------------------------------------------------------------
-# Cache heavy model loading so it is only loaded once per session
+# Cache Heavy Engine Loading
 # -----------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def load_engines():
@@ -129,7 +129,7 @@ def select_table_model(img, table_engine_type, det_model, rec_model):
         return engines["lineless_table_engine"], "lineless_table"
 
 def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr, rotated_fix, col_threshold, row_threshold):
-    # For OCR we use the mobile_det and mobile_rec models.
+    # Use the OCR models "mobile_det" and "mobile_rec"
     det_model = "mobile_det"
     rec_model = "mobile_rec"
     img_loader = LoadImage()
@@ -199,14 +199,13 @@ if uploaded_file is not None:
             st.markdown("### Elapsed Time")
             st.text(all_elapse)
             
-            # Parse the complete_html into a DataFrame and show it as a table
+            # Parse the HTML table into a DataFrame, display it, and provide a CSV download button
             try:
                 df_list = pd.read_html(complete_html)
                 if df_list:
                     df = df_list[0]
                     st.markdown("### Extracted Table Data")
-                    st.dataframe(df)
-                    # Provide a CSV download button
+                    st.table(df)
                     csv_data = df.to_csv(index=False).encode("utf-8")
                     st.download_button(
                         label="Download CSV",
