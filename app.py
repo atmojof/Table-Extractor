@@ -14,6 +14,8 @@ from table_cls import TableCls
 from wired_table_rec import WiredTableRecognition
 from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 
+st.set_page_config(layout="wide")
+
 # -----------------------------------------------------------------------------
 # Advanced Settings (Sidebar)
 # -----------------------------------------------------------------------------
@@ -199,7 +201,7 @@ if uploaded_file is not None:
                 if df_list:
                     df = df_list[0]
                     st.markdown("### Extracted Table Data")
-                    st.table(df)
+                    st.dataframe(df, use_container_width=True)
                     csv_data = df.to_csv(index=False).encode("utf-8")
                     st.download_button(
                         label="Download CSV",
