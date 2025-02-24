@@ -275,6 +275,7 @@ if input_img is not None:
                 input_img, small_box_cut_enhance, table_engine_type,
                 char_ocr, rotated_fix, col_threshold, row_threshold
             )
+        st.success("Processing complete!")
         st.markdown("### Recognized Table (HTML)")
         st.markdown(complete_html, unsafe_allow_html=True)
         st.markdown("### Table Recognition Boxes")
