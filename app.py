@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
+import pandas as pd
 
 # Import table recognition engines and helper functions
 from lineless_table_rec import LinelessTableRecognition
@@ -153,7 +154,6 @@ col_threshold = st.sidebar.slider("Column threshold (determine same col)", 5, 10
 row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 10, step=5)
 
 if uploaded_file is not None:
-    # Convert the uploaded file to a PIL image
     try:
         img = Image.open(uploaded_file).convert("RGB")
     except Exception as e:
@@ -174,5 +174,20 @@ if uploaded_file is not None:
             st.image(ocr_boxes_img, use_container_width=True)
             st.markdown("### Elapsed Time")
             st.text(all_elapse)
+            
+            # Attempt to parse the HTML table into a DataFrame and provide a CSV download button.
+            try:
+                df_list = pd.read_html(complete_html)
+                if df_list:
+                    df = df_list[0]
+                    csv_data = df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv_data,
+                        file_name="table.csv",
+                        mime="text/csv"
+                    )
+            except Exception as e:
+                st.error("CSV download not available: " + str(e))
 else:
     st.info("Please upload an image to begin.")
