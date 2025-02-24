@@ -1,612 +1,178 @@
-import asyncio
-import string
-import random
-from collections import Counter
-from itertools import count, tee
-import base64
-
+import time
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import streamlit as st
-import torch
 from PIL import Image
-from transformers import DetrImageProcessor, TableTransformerForObjectDetection
-from paddleocr import PaddleOCR
 
-ocr = PaddleOCR(use_angle_cls=True, lang="en", use_gpu=False, ocr_version='PP-OCRv4')
+# Import table recognition engines and helper functions
+from lineless_table_rec import LinelessTableRecognition
+from rapid_table import RapidTable, RapidTableInput
+from rapid_table.main import ModelType
+from rapidocr_onnxruntime import RapidOCR
+from table_cls import TableCls
+from wired_table_rec import WiredTableRecognition
+from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 
-st.set_option('deprecation.showPyplotGlobalUse', False)
-st.set_page_config(layout='wide')
-st.title("Table Detection and Table Structure Recognition")
-st.write(
-    "Implemented by MSFT team: https://github.com/microsoft/table-transformer")
+# -------------------------
+# Model & Engine Setup
+# -------------------------
+det_model_dir = {
+    "mobile_det": "models/ocr/ch_PP-OCRv4_det_infer.onnx",
+}
+rec_model_dir = {
+    "mobile_rec": "models/ocr/ch_PP-OCRv4_rec_infer.onnx",
+}
+table_engine_list = [
+    "auto",
+    "RapidTable(SLANet)",
+    "RapidTable(SLANet-plus)",
+    "RapidTable(unitable)",
+    "wired_table_v2",
+    "wired_table_v1",
+    "lineless_table"
+]
 
-table_detection_model = TableTransformerForObjectDetection.from_pretrained(
-    "microsoft/table-transformer-detection")
+# Initialize table recognition engines
+rapid_table_engine = RapidTable(RapidTableInput(model_type=ModelType.PPSTRUCTURE_ZH.value))
+SLANet_plus_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.SLANETPLUS.value))
+unitable_table_Engine = RapidTable(RapidTableInput(model_type=ModelType.UNITABLE.value))
+wired_table_engine_v1 = WiredTableRecognition(version="v1")
+wired_table_engine_v2 = WiredTableRecognition(version="v2")
+lineless_table_engine = LinelessTableRecognition()
+table_cls = TableCls()
 
-table_recognition_model = TableTransformerForObjectDetection.from_pretrained(
-    "microsoft/table-transformer-structure-recognition")
+# Build a dictionary of OCR engines based on available detection and recognition models.
+ocr_engine_dict = {}
+for det_model in det_model_dir.keys():
+    for rec_model in rec_model_dir.keys():
+        key = f"{det_model}_{rec_model}"
+        ocr_engine_dict[key] = RapidOCR(
+            det_model_path=det_model_dir[det_model],
+            rec_model_path=rec_model_dir[rec_model]
+        )
 
-def reload_ocr(vlang):
-    global ocr 
-    ocr = PaddleOCR(use_angle_cls=True, lang=vlang, use_gpu=False, ocr_version='PP-OCRv4')
+# -------------------------
+# Helper Functions
+# -------------------------
+def trans_char_ocr_res(ocr_res):
+    """Transform OCR results for character-level recognition."""
+    word_result = []
+    for res in ocr_res:
+        score = res[2]
+        for word_box, word in zip(res[3], res[4]):
+            word_result.append([word_box, word, score])
+    return word_result
 
+def select_ocr_model(det_model, rec_model):
+    """Return the OCR engine given model keys."""
+    return ocr_engine_dict[f"{det_model}_{rec_model}"]
 
-def PIL_to_cv(pil_img):
-    return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+def select_table_model(img, table_engine_type, det_model, rec_model):
+    """Select and return a table recognition engine based on the chosen type."""
+    if table_engine_type == "RapidTable(SLANet)":
+        return rapid_table_engine, table_engine_type
+    elif table_engine_type == "RapidTable(SLANet-plus)":
+        return SLANet_plus_table_Engine, table_engine_type
+    elif table_engine_type == "RapidTable(unitable)":
+        return unitable_table_Engine, table_engine_type
+    elif table_engine_type == "wired_table_v1":
+        return wired_table_engine_v1, table_engine_type
+    elif table_engine_type == "wired_table_v2":
+        return wired_table_engine_v2, table_engine_type
+    elif table_engine_type == "lineless_table":
+        return lineless_table_engine, table_engine_type
+    elif table_engine_type == "auto":
+        cls, _ = table_cls(img)
+        if cls == 'wired':
+            return wired_table_engine_v2, "wired_table_v2"
+        return lineless_table_engine, "lineless_table"
 
-
-def cv_to_PIL(cv_img):
-    return Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
-
-
-async def pytess(cell_pil_img, threshold: float = 0.5):
-    cell_pil_img = TableExtractionPipeline.add_padding(pil_img=cell_pil_img, top=50, right=30, bottom=50, left=30, color=(255, 255, 255))
-    result = ocr.ocr(np.asarray(cell_pil_img), cls=True)[0]
+def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr, rotated_fix, col_threshold, row_threshold):
+    # For OCR we use the mobile_det and mobile_rec models.
+    det_model = "mobile_det"
+    rec_model = "mobile_rec"
+    img_loader = LoadImage()
+    img = img_loader(img_input)
+    start = time.time()
     
-    #Debug
-    # filename = str(random.random())
-    # cell_pil_img.save("dump/" + filename + ".png")
-    # print(filename)
-    # print(result)
+    table_engine, table_type = select_table_model(img, table_engine_type, det_model, rec_model)
+    ocr_engine = select_ocr_model(det_model, rec_model)
     
-    text = ""
-    if result != None:
-        txts = [line[1][0] for line in result]
-        text = " ".join(txts)
-    return text
-
-
-def sharpen_image(pil_img):
-
-    img = PIL_to_cv(pil_img)
-    sharpen_kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-
-    sharpen = cv2.filter2D(img, -1, sharpen_kernel)
-    pil_img = cv_to_PIL(sharpen)
-    return pil_img
-
-
-def uniquify(seq, suffs=count(1)):
-    """Make all the items unique by adding a suffix (1, 2, etc).
-    Credit: https://stackoverflow.com/questions/30650474/python-rename-duplicates-in-list-with-progressive-numbers-without-sorting-list
-    `seq` is mutable sequence of strings.
-    `suffs` is an optional alternative suffix iterable.
-    """
-    not_unique = [k for k, v in Counter(seq).items() if v > 1]
-
-    suff_gens = dict(zip(not_unique, tee(suffs, len(not_unique))))
-    for idx, s in enumerate(seq):
-        try:
-            suffix = str(next(suff_gens[s]))
-        except KeyError:
-            continue
-        else:
-            seq[idx] += suffix
-
-    return seq
-
-
-def binarizeBlur_image(pil_img):
-    image = PIL_to_cv(pil_img)
-    thresh = cv2.threshold(image, 150, 255, cv2.THRESH_BINARY_INV)[1]
-
-    result = cv2.GaussianBlur(thresh, (5, 5), 0)
-    result = 255 - result
-    return cv_to_PIL(result)
-
-
-def td_postprocess(pil_img):
-    '''
-    Removes gray background from tables
-    '''
-    img = PIL_to_cv(pil_img)
-
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (0, 0, 100),
-                       (255, 5, 255))  # (0, 0, 100), (255, 5, 255)
-    nzmask = cv2.inRange(hsv, (0, 0, 5),
-                         (255, 255, 255))  # (0, 0, 5), (255, 255, 255))
-    nzmask = cv2.erode(nzmask, np.ones((3, 3)))  # (3,3)
-    mask = mask & nzmask
-
-    new_img = img.copy()
-    new_img[np.where(mask)] = 255
-
-    return cv_to_PIL(new_img)
-
-
-# def super_res(pil_img):
-#     # requires opencv-contrib-python installed without the opencv-python
-#     sr = dnn_superres.DnnSuperResImpl_create()
-#     image = PIL_to_cv(pil_img)
-#     model_path = "./LapSRN_x8.pb"
-#     model_name = model_path.split('/')[1].split('_')[0].lower()
-#     model_scale = int(model_path.split('/')[1].split('_')[1].split('.')[0][1])
-
-#     sr.readModel(model_path)
-#     sr.setModel(model_name, model_scale)
-#     final_img = sr.upsample(image)
-#     final_img = cv_to_PIL(final_img)
-
-#     return final_img
-
-
-def table_detector(image, THRESHOLD_PROBA):
-    '''
-    Table detection using DEtect-object TRansformer pre-trained on 1 million tables
-    '''
-
-    feature_extractor = DetrImageProcessor(do_resize=True,
-                                           size=800,
-                                           max_size=800)
-    encoding = feature_extractor(image, return_tensors="pt")
-
-    with torch.no_grad():
-        outputs = table_detection_model(**encoding)
-
-    probas = outputs.logits.softmax(-1)[0, :, :-1]
-    keep = probas.max(-1).values > THRESHOLD_PROBA
-
-    target_sizes = torch.tensor(image.size[::-1]).unsqueeze(0)
-    postprocessed_outputs = feature_extractor.post_process(
-        outputs, target_sizes)
-    bboxes_scaled = postprocessed_outputs[0]['boxes'][keep]
-
-    return (probas[keep], bboxes_scaled)
-
-
-def table_struct_recog(image, THRESHOLD_PROBA):
-    '''
-    Table structure recognition using DEtect-object TRansformer pre-trained on 1 million tables
-    '''
-
-    feature_extractor = DetrImageProcessor(do_resize=True,
-                                           size=1000,
-                                           max_size=1000)
-    encoding = feature_extractor(image, return_tensors="pt")
-
-    with torch.no_grad():
-        outputs = table_recognition_model(**encoding)
-
-    probas = outputs.logits.softmax(-1)[0, :, :-1]
-    keep = probas.max(-1).values > THRESHOLD_PROBA
-
-    target_sizes = torch.tensor(image.size[::-1]).unsqueeze(0)
-    postprocessed_outputs = feature_extractor.post_process(
-        outputs, target_sizes)
-    bboxes_scaled = postprocessed_outputs[0]['boxes'][keep]
-
-    return (probas[keep], bboxes_scaled)
-
-
-class TableExtractionPipeline():
-
-    colors = ["red", "blue", "green", "yellow", "orange", "violet"]
-
-    # colors = ["red", "blue", "green", "red", "red", "red"]
-
-    @staticmethod
-    def add_padding(pil_img,
-                    top,
-                    right,
-                    bottom,
-                    left,
-                    color=(255, 255, 255)):
-        '''
-        Image padding as part of TSR pre-processing to prevent missing table edges
-        '''
-        width, height = pil_img.size
-        new_width = width + right + left
-        new_height = height + top + bottom
-        result = Image.new(pil_img.mode, (new_width, new_height), color)
-        result.paste(pil_img, (left, top))
-        return result
-
-    @staticmethod
-    def dynamic_delta(xmin, ymin, xmax, ymax, delta_xmin, delta_ymin, delta_xmax, delta_ymax, pil_img):
-        offset_x = (xmax - xmin) * 0.05
-        offset_y = (ymax - ymin) * 0.05
-
-        w_img, h_img = pil_img.size
-
-        doxmin = xmin - (delta_xmin + offset_x) 
-        if (doxmin < 0):
-            doxmin = 0
-
-        doymin = ymin - (delta_ymin + offset_y)
-        if (doymin < 0):
-            doymin = 0
-
-        doxmax = xmax + (delta_xmax + offset_x)
-        if (doxmax > w_img):
-            doxmax = w_img
-
-        doymax = ymax + (delta_ymax + offset_y)
-        if (doymax > h_img):
-            doymax = h_img
-
-
-        return doxmin, doymin, doxmax, doymax
-
-    def plot_results_detection(self, c1, model, pil_img, prob, boxes,
-                               delta_xmin, delta_ymin, delta_xmax, delta_ymax):
-        '''
-        crop_tables and plot_results_detection must have same co-ord shifts because 1 only plots the other one updates co-ordinates 
-        '''
-        # st.write('img_obj')
-        # st.write(pil_img)
-        plt.imshow(pil_img)
-        ax = plt.gca()
-
-        for p, (xmin, ymin, xmax, ymax) in zip(prob, boxes.tolist()):
-            cl = p.argmax()
-            xmin, ymin, xmax, ymax = self.dynamic_delta(xmin, ymin, xmax, ymax, delta_xmin, delta_ymin, delta_xmax, delta_ymax, pil_img)
-            ax.add_patch(
-                plt.Rectangle((xmin, ymin),
-                              xmax - xmin,
-                              ymax - ymin,
-                              fill=False,
-                              color='red',
-                              linewidth=3))
-            text = f'{model.config.id2label[cl.item()]}: {p[cl]:0.2f}'
-            ax.text(xmin - 20,
-                    ymin - 50,
-                    text,
-                    fontsize=10,
-                    bbox=dict(facecolor='yellow', alpha=0.5))
-        plt.axis('off')
-        c1.pyplot()
-
-    def crop_tables(self, pil_img, prob, boxes, delta_xmin, delta_ymin,
-                    delta_xmax, delta_ymax):
-        '''
-        crop_tables and plot_results_detection must have same co-ord shifts because 1 only plots the other one updates co-ordinates 
-        '''
-        cropped_img_list = []
-
-        for p, (xmin, ymin, xmax, ymax) in zip(prob, boxes.tolist()):
-            xmin, ymin, xmax, ymax = self.dynamic_delta(xmin, ymin, xmax, ymax, delta_xmin, delta_ymin, delta_xmax, delta_ymax, pil_img)
-            cropped_img = pil_img.crop((xmin, ymin, xmax, ymax))
-            cropped_img_list.append(cropped_img)
-
-        return cropped_img_list
-
-    def generate_structure(self, c2, model, pil_img, prob, boxes,
-                           expand_rowcol_bbox_top, expand_rowcol_bbox_bottom):
-        '''
-        Co-ordinates are adjusted here by 3 'pixels'
-        To plot table pillow image and the TSR bounding boxes on the table
-        '''
-        # st.write('img_obj')
-        # st.write(pil_img)
-        plt.figure(figsize=(32, 20))
-        plt.imshow(pil_img)
-        ax = plt.gca()
-        rows = {}
-        cols = {}
-        idx = 0
-
-        for p, (xmin, ymin, xmax, ymax) in zip(prob, boxes.tolist()):
-
-            xmin, ymin, xmax, ymax = xmin, ymin, xmax, ymax
-            cl = p.argmax()
-            class_text = model.config.id2label[cl.item()]
-            text = f'{class_text}: {p[cl]:0.2f}'
-            # or (class_text == 'table column')
-            if (class_text
-                    == 'table row') or (class_text
-                                        == 'table projected row header') or (
-                                            class_text == 'table column'):
-                ax.add_patch(
-                    plt.Rectangle((xmin, ymin),
-                                  xmax - xmin,
-                                  ymax - ymin,
-                                  fill=False,
-                                  color=self.colors[cl.item()],
-                                  linewidth=2))
-                ax.text(xmin - 10,
-                        ymin - 10,
-                        text,
-                        fontsize=5,
-                        bbox=dict(facecolor='yellow', alpha=0.5))
-
-            if class_text == 'table row':
-                rows['table row.' +
-                     str(idx)] = (xmin, ymin - expand_rowcol_bbox_top, xmax,
-                                  ymax + expand_rowcol_bbox_bottom)
-            if class_text == 'table column':
-                cols['table column.' +
-                     str(idx)] = (xmin, ymin - expand_rowcol_bbox_top, xmax,
-                                  ymax + expand_rowcol_bbox_bottom)
-
-            idx += 1
-
-        plt.axis('on')
-        c2.pyplot()
-        return rows, cols
-
-    def sort_table_featuresv2(self, rows: dict, cols: dict):
-        # Sometimes the header and first row overlap, and we need the header bbox not to have first row's bbox inside the headers bbox
-        rows_ = {
-            table_feature: (xmin, ymin, xmax, ymax)
-            for table_feature, (
-                xmin, ymin, xmax,
-                ymax) in sorted(rows.items(), key=lambda tup: tup[1][1])
-        }
-        cols_ = {
-            table_feature: (xmin, ymin, xmax, ymax)
-            for table_feature, (
-                xmin, ymin, xmax,
-                ymax) in sorted(cols.items(), key=lambda tup: tup[1][0])
-        }
-
-        return rows_, cols_
-
-    def individual_table_featuresv2(self, pil_img, rows: dict, cols: dict):
-
-        for k, v in rows.items():
-            xmin, ymin, xmax, ymax = v
-            cropped_img = pil_img.crop((xmin, ymin, xmax, ymax))
-            rows[k] = xmin, ymin, xmax, ymax, cropped_img
-
-        for k, v in cols.items():
-            xmin, ymin, xmax, ymax = v
-            cropped_img = pil_img.crop((xmin, ymin, xmax, ymax))
-            cols[k] = xmin, ymin, xmax, ymax, cropped_img
-
-        return rows, cols
-
-    def object_to_cellsv2(self, master_row: dict, cols: dict,
-                          expand_rowcol_bbox_top, expand_rowcol_bbox_bottom,
-                          padd_left):
-        '''Removes redundant bbox for rows&columns and divides each row into cells from columns
-        Args:
-        Returns:
-        
-        '''
-        cells_img = {}
-        header_idx = 0
-        row_idx = 0
-        previous_xmax_col = 0
-        new_cols = {}
-        new_master_row = {}
-        previous_ymin_row = 0
-        new_cols = cols
-        new_master_row = master_row
-        ## Below 2 for loops remove redundant bounding boxes ###
-        # for k_col, v_col in cols.items():
-        #     xmin_col, _, xmax_col, _, col_img = v_col
-        #     if (np.isclose(previous_xmax_col, xmax_col, atol=5)) or (xmin_col >= xmax_col):
-        #         print('Found a column with double bbox')
-        #         continue
-        #     previous_xmax_col = xmax_col
-        #     new_cols[k_col] = v_col
-
-        # for k_row, v_row in master_row.items():
-        #     _, ymin_row, _, ymax_row, row_img = v_row
-        #     if (np.isclose(previous_ymin_row, ymin_row, atol=5)) or (ymin_row >= ymax_row):
-        #         print('Found a row with double bbox')
-        #         continue
-        #     previous_ymin_row = ymin_row
-        #     new_master_row[k_row] = v_row
-        ######################################################
-        for k_row, v_row in new_master_row.items():
-
-            _, _, _, _, row_img = v_row
-            xmax, ymax = row_img.size
-            xa, ya, xb, yb = 0, 0, 0, ymax
-            row_img_list = []
-            # plt.imshow(row_img)
-            # st.pyplot()
-            for idx, kv in enumerate(new_cols.items()):
-                k_col, v_col = kv
-                xmin_col, _, xmax_col, _, col_img = v_col
-                xmin_col, xmax_col = xmin_col - padd_left - 10, xmax_col - padd_left
-                xa = xmin_col
-                xb = xmax_col
-                if idx == 0:
-                    xa = 0
-                if idx == len(new_cols) - 1:
-                    xb = xmax
-                xa, ya, xb, yb = xa, ya, xb, yb
-
-                row_img_cropped = row_img.crop((xa, ya, xb, yb))
-                row_img_list.append(row_img_cropped)
-
-            cells_img[k_row + '.' + str(row_idx)] = row_img_list
-            row_idx += 1
-
-        return cells_img, len(new_cols), len(new_master_row) - 1
-
-    def clean_dataframe(self, df):
-        '''
-        Remove irrelevant symbols that appear with tesseractOCR
-        '''
-        # df.columns = [col.replace('|', '') for col in df.columns]
-
-        for col in df.columns:
-
-            df[col] = df[col].str.replace("'", '', regex=True)
-            df[col] = df[col].str.replace('"', '', regex=True)
-            df[col] = df[col].str.replace(']', '', regex=True)
-            df[col] = df[col].str.replace('[', '', regex=True)
-            df[col] = df[col].str.replace('{', '', regex=True)
-            df[col] = df[col].str.replace('}', '', regex=True)
-        return df
-
-    @st.cache
-    def convert_df(self, df):
-        csv = df.to_csv(index=False, encoding='utf-8-sig')  # utf-8-sig to handle BOM for Excel
-        return csv.encode('utf-8')
-
-    def create_dataframe(self, c3, cell_ocr_res: list, max_cols: int,
-                         max_rows: int):
-        '''Create dataframe using list of cell values of the table, also checks for valid header of dataframe
-        Args:
-            cell_ocr_res: list of strings, each element representing a cell in a table
-            max_cols, max_rows: number of columns and rows
-        Returns:
-            dataframe : final dataframe after all pre-processing 
-        '''
-
-        headers = cell_ocr_res[:max_cols]
-        new_headers = uniquify(headers,
-                               (f' {x!s}' for x in string.ascii_lowercase))
-        counter = 0
-
-        cells_list = cell_ocr_res[max_cols:]
-        df = pd.DataFrame("", index=range(0, max_rows), columns=new_headers)
-
-        cell_idx = 0
-        for nrows in range(max_rows):
-            for ncols in range(max_cols):
-                df.iat[nrows, ncols] = str(cells_list[cell_idx])
-                cell_idx += 1
-
-        ## To check if there are duplicate headers if result of uniquify+col == col
-        ## This check removes headers when all headers are empty or if median of header word count is less than 6
-        for x, col in zip(string.ascii_lowercase, new_headers):
-            if f' {x!s}' == col:
-                counter += 1
-        header_char_count = [len(col) for col in new_headers]
-
-        # if (counter == len(new_headers)) or (statistics.median(header_char_count) < 6):
-        #     st.write('woooot')
-        #     df.columns = uniquify(df.iloc[0], (f' {x!s}' for x in string.ascii_lowercase))
-        #     df = df.iloc[1:,:]
-
-        df = self.clean_dataframe(df)
-
-        c3.dataframe(df)
-        csv = self.convert_df(df)
-
-        try:
-            numkey = str(df.iloc[0, 0])
-        except IndexError:
-            numkey = str(0)
-
-        # Create a download link with filename and extension
-        filename = f"table_{numkey}.csv"  # Adjust the filename as needed
-        b64_csv = base64.b64encode(csv).decode()  # Encode CSV data to base64
-        href = f'<a href="data:file/csv;base64,{b64_csv}" download="{filename}">Download {filename}</a>'
-        c3.markdown(href, unsafe_allow_html=True)
-
-        return df
-
-    async def start_process(self, image_path: str, TD_THRESHOLD, TSR_THRESHOLD,
-                            OCR_THRESHOLD, padd_top, padd_left, padd_bottom,
-                            padd_right, delta_xmin, delta_ymin, delta_xmax,
-                            delta_ymax, expand_rowcol_bbox_top,
-                            expand_rowcol_bbox_bottom):
-        '''
-        Initiates process of generating pandas dataframes from raw pdf-page images
-        '''
-        image = Image.open(image_path).convert("RGB")
-        probas, bboxes_scaled = table_detector(image,
-                                               THRESHOLD_PROBA=TD_THRESHOLD)
-
-        if bboxes_scaled.nelement() == 0:
-            st.write('No table found in the pdf-page image')
-            return ''
-
-        # try:
-        # st.write('Document: '+image_path.split('/')[-1])
-        c1, c2, c3 = st.columns((1, 1, 1))
-
-        self.plot_results_detection(c1, table_detection_model, image, probas,
-                                    bboxes_scaled, delta_xmin, delta_ymin,
-                                    delta_xmax, delta_ymax)
-        cropped_img_list = self.crop_tables(image, probas, bboxes_scaled,
-                                            delta_xmin, delta_ymin, delta_xmax,
-                                            delta_ymax)
-
-        for idx, unpadded_table in enumerate(cropped_img_list):
-
-            table = self.add_padding(unpadded_table, padd_top, padd_right,
-                                     padd_bottom, padd_left)
-            # table = super_res(table)
-            # table = binarizeBlur_image(table)
-            # table = sharpen_image(table) # Test sharpen image next
-            # table = td_postprocess(table)
-
-            # table.save("result"+str(idx)+".png")
-
-            probas, bboxes_scaled = table_struct_recog(
-                table, THRESHOLD_PROBA=TSR_THRESHOLD)
-            rows, cols = self.generate_structure(c2, table_recognition_model,
-                                                 table, probas, bboxes_scaled,
-                                                 expand_rowcol_bbox_top,
-                                                 expand_rowcol_bbox_bottom)
-            # st.write(len(rows), len(cols))
-            rows, cols = self.sort_table_featuresv2(rows, cols)
-            master_row, cols = self.individual_table_featuresv2(
-                table, rows, cols)
-
-            cells_img, max_cols, max_rows = self.object_to_cellsv2(
-                master_row, cols, expand_rowcol_bbox_top,
-                expand_rowcol_bbox_bottom, padd_left)
-
-            sequential_cell_img_list = []
-            for k, img_list in cells_img.items():
-                for img in img_list:
-                    # img = super_res(img)
-                    # img = sharpen_image(img) # Test sharpen image next
-                    # img = binarizeBlur_image(img)
-                    # img = self.add_padding(img, 10,10,10,10)
-                    # plt.imshow(img)
-                    # c3.pyplot()
-                    sequential_cell_img_list.append(
-                        pytess(cell_pil_img=img, threshold=OCR_THRESHOLD))
-
-            cell_ocr_res = await asyncio.gather(*sequential_cell_img_list)
-
-            self.create_dataframe(c3, cell_ocr_res, max_cols, max_rows)
-            st.write(
-                'Errors in OCR is due to either quality of the image or performance of the OCR'
-            )
-        # except:
-        #     st.write('Either incorrectly identified table or no table, to debug remove try/except')
-        # break
-        # break
-
-
-if __name__ == "__main__":
-
-    st_up, st_lang = st.columns((1, 1))
-    img_name = st_up.file_uploader("Upload an image with table(s)")
-    lang = st_lang.selectbox('Language', ('en', 'japan'))
-    reload_ocr(lang)
-
-    st1, st2, st3 = st.columns((1, 1, 1))
-    TD_th = st1.slider('Table detection threshold', 0.0, 1.0, 0.8)
-    TSR_th = st2.slider('Table structure recognition threshold', 0.0, 1.0, 0.7)
-    OCR_th = st3.slider("Text Probs Threshold", 0.0, 1.0, 0.5)
-
-    st1, st2, st3, st4 = st.columns((1, 1, 1, 1))
-
-    padd_top = st1.slider('Padding top', 0, 200, 90)
-    padd_left = st2.slider('Padding left', 0, 200, 40)
-    padd_right = st3.slider('Padding right', 0, 200, 40)
-    padd_bottom = st4.slider('Padding bottom', 0, 200, 90)
-
-    te = TableExtractionPipeline()
-    # for img in image_list:
-    if img_name is not None:
-        asyncio.run(
-            te.start_process(img_name,
-                             TD_THRESHOLD=TD_th,
-                             TSR_THRESHOLD=TSR_th,
-                             OCR_THRESHOLD=OCR_th,
-                             padd_top=padd_top,
-                             padd_left=padd_left,
-                             padd_bottom=padd_bottom,
-                             padd_right=padd_right,
-                             delta_xmin=10, # add offset to the left of the table
-                             delta_ymin=3, # add offset to the bottom of the table
-                             delta_xmax=10, # add offset to the right of the table
-                             delta_ymax=3, # add offset to the top of the table
-                             expand_rowcol_bbox_top=0,
-                             expand_rowcol_bbox_bottom=0))
+    ocr_res, ocr_infer_elapse = ocr_engine(img, return_word_box=char_ocr)
+    det_cost, cls_cost, rec_cost = ocr_infer_elapse
+    if char_ocr:
+        ocr_res = trans_char_ocr_res(ocr_res)
+    ocr_boxes = [box_4_2_poly_to_box_4_1(ori_ocr[0]) for ori_ocr in ocr_res]
+    
+    if isinstance(table_engine, RapidTable):
+        table_results = table_engine(img, ocr_res)
+        html, polygons, table_rec_elapse = table_results.pred_html, table_results.cell_bboxes, table_results.elapse
+        # Adjust polygon format to (x1, y1, x2, y2)
+        polygons = [[p[0], p[1], p[4], p[5]] for p in polygons]
+    elif isinstance(table_engine, (WiredTableRecognition, LinelessTableRecognition)):
+        html, table_rec_elapse, polygons, _, ocr_res = table_engine(
+            img, ocr_result=ocr_res,
+            enhance_box_line=small_box_cut_enhance,
+            rotated_fix=rotated_fix,
+            col_threshold=col_threshold,
+            row_threshold=row_threshold
+        )
+    
+    sum_elapse = time.time() - start
+    all_elapse = (
+        f"- table_type: {table_type}\n"
+        f"- table all cost: {sum_elapse:.5f}\n"
+        f"- table rec cost: {table_rec_elapse:.5f}\n"
+        f"- ocr cost: {det_cost + cls_cost + rec_cost:.5f}"
+    )
+    
+    # Convert image to RGB for display
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    table_boxes_img = plot_rec_box(img.copy(), polygons)
+    ocr_boxes_img = plot_rec_box(img.copy(), ocr_boxes)
+    complete_html = format_html(html)
+    return complete_html, table_boxes_img, ocr_boxes_img, all_elapse
+
+# -------------------------
+# Streamlit App Interface
+# -------------------------
+st.set_page_config(page_title="Table Structure Recognition Demo", layout="wide")
+st.title("Table Structure Recognition Demo")
+
+st.markdown("""
+This demo uses RapidTable, WiredTable, and LinelessTable recognition engines along with RapidOCR to extract table structures from images.
+""")
+
+# Sidebar options
+uploaded_file = st.sidebar.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+table_engine_type = st.sidebar.selectbox("Select Recognition Table Engine", table_engine_list, index=0)
+small_box_cut_enhance = st.sidebar.checkbox("Box Cutting Enhancement", value=True)
+char_ocr = st.sidebar.checkbox("Character-level OCR", value=False)
+rotated_fix = st.sidebar.checkbox("Table Rotate Rec Enhancement", value=False)
+col_threshold = st.sidebar.slider("Column threshold (determine same col)", 5, 100, 15, step=5)
+row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 10, step=5)
+
+if uploaded_file is not None:
+    # Convert the uploaded file to a PIL image
+    try:
+        img = Image.open(uploaded_file).convert("RGB")
+    except Exception as e:
+        st.error("Error loading image: " + str(e))
+    else:
+        st.image(img, caption="Uploaded Image", use_container_width=True)
+        if st.button("Run Recognition"):
+            with st.spinner("Processing image..."):
+                complete_html, table_boxes_img, ocr_boxes_img, all_elapse = process_image(
+                    img, small_box_cut_enhance, table_engine_type,
+                    char_ocr, rotated_fix, col_threshold, row_threshold
+                )
+            st.markdown("### Recognized Table (HTML)")
+            st.markdown(complete_html, unsafe_allow_html=True)
+            st.markdown("### Table Recognition Boxes")
+            st.image(table_boxes_img, use_container_width=True)
+            st.markdown("### OCR Boxes")
+            st.image(ocr_boxes_img, use_container_width=True)
+            st.markdown("### Elapsed Time")
+            st.text(all_elapse)
+else:
+    st.info("Please upload an image to begin.")
