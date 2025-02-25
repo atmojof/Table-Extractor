@@ -24,6 +24,10 @@ from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 # Advanced Settings (Sidebar)
 # -----------------------------------------------------------------------------
 st.sidebar.header("Advanced Settings")
+
+# New option: Extraction Mode
+extraction_mode = st.sidebar.selectbox("Select Extraction Mode", ["Table Extraction", "Text Extraction"])
+
 table_engine_type = st.sidebar.selectbox(
     "Select Recognition Table Engine",
     ["auto",
@@ -51,7 +55,6 @@ uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 # If no image is uploaded, show sample images (thumbnails) for selection.
 if uploaded_file is None and "selected_sample" not in st.session_state:
     st.info("No image uploaded. Please select one of the sample images below.")
-    # List sample image filenames (adjust the list as needed)
     sample_folder = "sample"
     sample_files = [f for f in os.listdir(sample_folder) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
     if sample_files:
@@ -87,7 +90,7 @@ else:
 # Display the chosen image (if available)
 if input_img is not None:
     st.image(input_img, caption="Selected Image", use_container_width=True)
-    
+
 # -----------------------------------------------------------------------------
 # Cache Heavy Engine Loading
 # -----------------------------------------------------------------------------
@@ -170,7 +173,7 @@ def select_table_model(img, table_engine_type, det_model, rec_model):
         return engines["lineless_table_engine"], "lineless_table"
 
 def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr, rotated_fix, col_threshold, row_threshold):
-    # Use the OCR models "mobile_det" and "mobile_rec"
+    """Process image for table extraction."""
     det_model = "mobile_det"
     rec_model = "mobile_rec"
     img_loader = LoadImage()
@@ -214,6 +217,37 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
     ocr_boxes_img = plot_rec_box(img.copy(), ocr_boxes)
     complete_html = format_html(html)
     return complete_html, table_boxes_img, ocr_boxes_img, all_elapse
+
+def process_text_image(img_input, char_ocr):
+    """Process image for text extraction using only OCR."""
+    det_model = "mobile_det"
+    rec_model = "mobile_rec"
+    img_loader = LoadImage()
+    img = img_loader(img_input)
+    start = time.time()
+    
+    ocr_engine = select_ocr_model(det_model, rec_model)
+    ocr_res, ocr_infer_elapse = ocr_engine(img, return_word_box=char_ocr)
+    det_cost, cls_cost, rec_cost = ocr_infer_elapse
+    if char_ocr:
+        ocr_res = trans_char_ocr_res(ocr_res)
+    ocr_boxes = [box_4_2_poly_to_box_4_1(ori_ocr[0]) for ori_ocr in ocr_res]
+    
+    # Extract recognized text. Assumes each OCR result's second element is the text.
+    if char_ocr:
+        texts = [word for (box, word, score) in ocr_res]
+    else:
+        texts = [res[1] for res in ocr_res]
+    full_text = "\n".join(texts)
+    
+    sum_elapse = time.time() - start
+    all_elapse = (
+        f"- text extraction cost: {sum_elapse:.5f}\n"
+        f"- ocr cost: {det_cost + cls_cost + rec_cost:.5f}"
+    )
+    
+    ocr_boxes_img = plot_rec_box(img.copy(), ocr_boxes)
+    return full_text, ocr_boxes_img, all_elapse
 
 # -----------------------------------------------------------------------------
 # Helper Function: Convert HTML table to Excel (preserving merged cells)
@@ -270,37 +304,54 @@ def html_table_to_excel_bytes(html):
 # -----------------------------------------------------------------------------
 if input_img is not None:
     if st.button("Run Recognition"):
-        with st.spinner("Processing image..."):
-            complete_html, table_boxes_img, ocr_boxes_img, all_elapse = process_image(
-                input_img, small_box_cut_enhance, table_engine_type,
-                char_ocr, rotated_fix, col_threshold, row_threshold
-            )
-        st.success("Processing complete!")
-        st.markdown("### Recognized Table (HTML)")
-        st.markdown(complete_html, unsafe_allow_html=True)
-        st.markdown("### Table Recognition Boxes")
-        st.image(table_boxes_img, use_container_width=True)
-        st.markdown("### OCR Boxes")
-        st.image(ocr_boxes_img, use_container_width=True)
-        st.markdown("### Elapsed Time")
-        st.text(all_elapse)
-        
-        # Convert the HTML table to an Excel file preserving merged cells.
-        try:
-            excel_bytes = html_table_to_excel_bytes(complete_html)
+        if extraction_mode == "Table Extraction":
+            with st.spinner("Processing image for table extraction..."):
+                complete_html, table_boxes_img, ocr_boxes_img, all_elapse = process_image(
+                    input_img, small_box_cut_enhance, table_engine_type,
+                    char_ocr, rotated_fix, col_threshold, row_threshold
+                )
+            st.success("Processing complete!")
+            st.markdown("### Recognized Table (HTML)")
+            st.markdown(complete_html, unsafe_allow_html=True)
+            st.markdown("### Table Recognition Boxes")
+            st.image(table_boxes_img, use_container_width=True)
+            st.markdown("### OCR Boxes")
+            st.image(ocr_boxes_img, use_container_width=True)
+            st.markdown("### Elapsed Time")
+            st.text(all_elapse)
+            
+            # Convert the HTML table to an Excel file preserving merged cells.
+            try:
+                excel_bytes = html_table_to_excel_bytes(complete_html)
+                st.download_button(
+                    label="Download Excel (.xlsx)",
+                    data=excel_bytes,
+                    file_name="table.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                # Optionally, also show a flat DataFrame view parsed from the HTML.
+                df_list = pd.read_html(complete_html)
+                if df_list:
+                    df = df_list[0]
+                    st.markdown("### Extracted Table Data (Flat View)")
+                    st.dataframe(df, use_container_width=True)
+            except Exception as e:
+                st.error("Failed to convert HTML table to Excel: " + str(e))
+        elif extraction_mode == "Text Extraction":
+            with st.spinner("Processing image for text extraction..."):
+                full_text, ocr_boxes_img, all_elapse = process_text_image(input_img, char_ocr)
+            st.success("Processing complete!")
+            st.markdown("### Extracted Text")
+            st.text_area("OCR Result", full_text, height=200)
             st.download_button(
-                label="Download Excel (.xlsx)",
-                data=excel_bytes,
-                file_name="table.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                label="Download Text",
+                data=full_text,
+                file_name="extracted_text.txt",
+                mime="text/plain"
             )
-            # Optionally, also show a flat DataFrame view parsed from the HTML.
-            df_list = pd.read_html(complete_html)
-            if df_list:
-                df = df_list[0]
-                st.markdown("### Extracted Table Data (Flat View)")
-                st.dataframe(df, use_container_width=True)
-        except Exception as e:
-            st.error("Failed to convert HTML table to Excel: " + str(e))
+            st.markdown("### OCR Boxes")
+            st.image(ocr_boxes_img, use_container_width=True)
+            st.markdown("### Elapsed Time")
+            st.text(all_elapse)
 else:
     st.info("Please upload an image or select a sample image to begin.")
