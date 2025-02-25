@@ -47,7 +47,7 @@ row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 
 # -----------------------------------------------------------------------------
 # Main Title and File Uploader (Main Body)
 # -----------------------------------------------------------------------------
-st.title("📝 Extract Data from Image")
+st.title("Extract Data from Image")
 
 # First, provide an uploader in the main body.
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
@@ -310,48 +310,65 @@ if input_img is not None:
                     input_img, small_box_cut_enhance, table_engine_type,
                     char_ocr, rotated_fix, col_threshold, row_threshold
                 )
-            st.success("Processing complete!")
-            st.markdown("### Recognized Table (HTML)")
-            st.markdown(complete_html, unsafe_allow_html=True)
-            st.markdown("### Table Recognition Boxes")
-            st.image(table_boxes_img, use_container_width=True)
-            st.markdown("### OCR Boxes")
-            st.image(ocr_boxes_img, use_container_width=True)
-            st.markdown("### Elapsed Time")
-            st.text(all_elapse)
-            
-            # Convert the HTML table to an Excel file preserving merged cells.
-            try:
-                excel_bytes = html_table_to_excel_bytes(complete_html)
-                st.download_button(
-                    label="Download Excel (.xlsx)",
-                    data=excel_bytes,
-                    file_name="table.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                # Optionally, also show a flat DataFrame view parsed from the HTML.
-                df_list = pd.read_html(complete_html)
-                if df_list:
-                    df = df_list[0]
-                    st.markdown("### Extracted Table Data (Flat View)")
-                    st.dataframe(df, use_container_width=True)
-            except Exception as e:
-                st.error("Failed to convert HTML table to Excel: " + str(e))
+            # Store table extraction results in session_state if desired
+            st.session_state["table_result"] = {
+                "html": complete_html,
+                "table_boxes_img": table_boxes_img,
+                "ocr_boxes_img": ocr_boxes_img,
+                "all_elapse": all_elapse
+            }
         elif extraction_mode == "Text Extraction":
             with st.spinner("Processing image for text extraction..."):
                 full_text, ocr_boxes_img, all_elapse = process_text_image(input_img, char_ocr)
-            st.success("Processing complete!")
-            st.markdown("### Extracted Text")
-            st.text_area("OCR Result", full_text, height=200)
+            # Save the OCR result in session_state so it persists across re-runs
+            st.session_state["extracted_text"] = full_text
+            st.session_state["ocr_boxes_img"] = ocr_boxes_img
+            st.session_state["ocr_elapsed"] = all_elapse
+
+    # Display results based on the chosen extraction mode.
+    if extraction_mode == "Table Extraction" and "table_result" in st.session_state:
+        result = st.session_state["table_result"]
+        st.success("Processing complete!")
+        st.markdown("### Recognized Table (HTML)")
+        st.markdown(result["html"], unsafe_allow_html=True)
+        st.markdown("### Table Recognition Boxes")
+        st.image(result["table_boxes_img"], use_container_width=True)
+        st.markdown("### OCR Boxes")
+        st.image(result["ocr_boxes_img"], use_container_width=True)
+        st.markdown("### Elapsed Time")
+        st.text(result["all_elapse"])
+        
+        # Convert the HTML table to an Excel file preserving merged cells.
+        try:
+            excel_bytes = html_table_to_excel_bytes(result["html"])
             st.download_button(
-                label="Download Text",
-                data=full_text,
-                file_name="extracted_text.txt",
-                mime="text/plain"
+                label="Download Excel (.xlsx)",
+                data=excel_bytes,
+                file_name="table.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            st.markdown("### OCR Boxes")
-            st.image(ocr_boxes_img, use_container_width=True)
-            st.markdown("### Elapsed Time")
-            st.text(all_elapse)
+            # Optionally, also show a flat DataFrame view parsed from the HTML.
+            df_list = pd.read_html(result["html"])
+            if df_list:
+                df = df_list[0]
+                st.markdown("### Extracted Table Data (Flat View)")
+                st.dataframe(df, use_container_width=True)
+        except Exception as e:
+            st.error("Failed to convert HTML table to Excel: " + str(e))
+    
+    elif extraction_mode == "Text Extraction" and "extracted_text" in st.session_state:
+        st.success("Processing complete!")
+        st.markdown("### Extracted Text")
+        st.text_area("OCR Result", st.session_state["extracted_text"], height=200)
+        st.download_button(
+            label="Download Text (.txt)",
+            data=st.session_state["extracted_text"],
+            file_name="extracted_text.txt",
+            mime="text/plain"
+        )
+        st.markdown("### OCR Boxes")
+        st.image(st.session_state["ocr_boxes_img"], use_container_width=True)
+        st.markdown("### Elapsed Time")
+        st.text(st.session_state["ocr_elapsed"])
 else:
     st.info("Please upload an image or select a sample image to begin.")
