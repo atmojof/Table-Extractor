@@ -47,7 +47,7 @@ row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 
 # -----------------------------------------------------------------------------
 # Main Title and File Uploader (Main Body)
 # -----------------------------------------------------------------------------
-st.title("Extract Data from Image")
+st.title("📝 Extract Data from Image")
 
 # First, provide an uploader in the main body.
 uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
