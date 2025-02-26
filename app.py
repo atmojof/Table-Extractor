@@ -61,7 +61,7 @@ if input_source == "Upload Image":
         except Exception as e:
             st.error("Error loading uploaded image: " + str(e))
             
-elif input_source == "Select Sample":
+elif input_source == "From Sample":
     sample_folder = "sample"
     sample_files = [f for f in os.listdir(sample_folder) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
     if sample_files:
