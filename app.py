@@ -25,9 +25,6 @@ from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 # -----------------------------------------------------------------------------
 st.sidebar.header("Advanced Settings")
 
-# New option: Extraction Mode
-extraction_mode = st.sidebar.selectbox("Select Extraction Mode", ["Table Extraction", "Text Extraction"])
-
 table_engine_type = st.sidebar.selectbox(
     "Select Recognition Table Engine",
     ["auto",
@@ -49,8 +46,11 @@ row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 
 # -----------------------------------------------------------------------------
 st.title("📝 Extract Data from Image")
 
+# New option: Extraction Mode
+extraction_mode = st.pills("Select Extraction Mode", ["Table Extraction", "Text Extraction"], default="Table Extraction")
+
 # Choose Input Source: Upload Image, Select Sample, or Camera
-input_source = st.radio("Choose Input Source:", ["Upload Image", "Select Sample", "Camera"])
+input_source = st.radio("Choose Input Source:", ["Upload Image", "From Sample", "Camera"], horizontal=True)
 input_img = None
 
 if input_source == "Upload Image":
