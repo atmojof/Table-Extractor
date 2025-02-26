@@ -23,7 +23,7 @@ from utils import plot_rec_box, LoadImage, format_html, box_4_2_poly_to_box_4_1
 # -----------------------------------------------------------------------------
 # Advanced Settings (Sidebar)
 # -----------------------------------------------------------------------------
-st.sidebar.header("Advanced Settings")
+st.sidebar.header("⚙️ Advanced Settings")
 
 table_engine_type = st.sidebar.selectbox(
     "Select Recognition Table Engine",
