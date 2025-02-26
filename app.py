@@ -45,16 +45,23 @@ col_threshold = st.sidebar.slider("Column threshold (determine same col)", 5, 10
 row_threshold = st.sidebar.slider("Row threshold (determine same row)", 5, 100, 10, step=5)
 
 # -----------------------------------------------------------------------------
-# Main Title and File Uploader (Main Body)
+# Main Title and Input Source (Main Body)
 # -----------------------------------------------------------------------------
-st.title("Extract Data from Image")
+st.title("📝 Extract Data from Image")
 
-# First, provide an uploader in the main body.
-uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+# Choose Input Source: Upload Image, Select Sample, or Camera
+input_source = st.radio("Choose Input Source:", ["Upload Image", "Select Sample", "Camera"])
+input_img = None
 
-# If no image is uploaded, show sample images (thumbnails) for selection.
-if uploaded_file is None and "selected_sample" not in st.session_state:
-    st.info("No image uploaded. Please select one of the sample images below.")
+if input_source == "Upload Image":
+    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+    if uploaded_file is not None:
+        try:
+            input_img = Image.open(uploaded_file).convert("RGB")
+        except Exception as e:
+            st.error("Error loading uploaded image: " + str(e))
+            
+elif input_source == "Select Sample":
     sample_folder = "sample"
     sample_files = [f for f in os.listdir(sample_folder) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
     if sample_files:
@@ -72,22 +79,21 @@ if uploaded_file is None and "selected_sample" not in st.session_state:
                     st.session_state.selected_sample = filepath
     else:
         st.info("No sample images found in the sample folder.")
+    
+    if "selected_sample" in st.session_state:
+        try:
+            input_img = Image.open(st.session_state.selected_sample).convert("RGB")
+        except Exception as e:
+            st.error("Error loading sample image: " + str(e))
+            
+elif input_source == "Camera":
+    camera_image = st.camera_input("Capture an image")
+    if camera_image is not None:
+        try:
+            input_img = Image.open(camera_image).convert("RGB")
+        except Exception as e:
+            st.error("Error loading camera image: " + str(e))
 
-# Decide which image to use: uploaded file takes precedence over sample.
-if uploaded_file is not None:
-    try:
-        input_img = Image.open(uploaded_file).convert("RGB")
-    except Exception as e:
-        st.error("Error loading uploaded image: " + str(e))
-elif "selected_sample" in st.session_state:
-    try:
-        input_img = Image.open(st.session_state.selected_sample).convert("RGB")
-    except Exception as e:
-        st.error("Error loading sample image: " + str(e))
-else:
-    input_img = None
-
-# Display the chosen image (if available)
 if input_img is not None:
     st.image(input_img, caption="Selected Image", use_container_width=True)
 
@@ -193,7 +199,7 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
         table_results = table_engine(img, ocr_res)
         html, polygons, table_rec_elapse = table_results.pred_html, table_results.cell_bboxes, table_results.elapse
         # Adjust polygon format to (x1, y1, x2, y2)
-        polygons = [[p[0], p[1], p[4], p[5]] for p in polygons]
+        polygons = [[p[0], p[1], p[4], p[5]] for p in polygons] if polygons is not None else []
     elif isinstance(table_engine, (WiredTableRecognition, LinelessTableRecognition)):
         html, table_rec_elapse, polygons, _, ocr_res = table_engine(
             img, ocr_result=ocr_res,
@@ -202,6 +208,10 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
             col_threshold=col_threshold,
             row_threshold=row_threshold
         )
+        if polygons is not None:
+            polygons = [[p[0], p[1], p[4], p[5]] for p in polygons]
+        else:
+            polygons = []
     
     sum_elapse = time.time() - start
     all_elapse = (
@@ -371,4 +381,4 @@ if input_img is not None:
         st.markdown("### Elapsed Time")
         st.text(st.session_state["ocr_elapsed"])
 else:
-    st.info("Please upload an image or select a sample image to begin.")
+    st.info("Please upload an image, select a sample, or capture an image using the camera to begin.")
