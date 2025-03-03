@@ -185,21 +185,25 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
     img_loader = LoadImage()
     img = img_loader(img_input)
     start = time.time()
-    
+
     table_engine, table_type = select_table_model(img, table_engine_type, det_model, rec_model)
     ocr_engine = select_ocr_model(det_model, rec_model)
-    
+
     ocr_res, ocr_infer_elapse = ocr_engine(img, return_word_box=char_ocr)
     det_cost, cls_cost, rec_cost = ocr_infer_elapse
     if char_ocr:
         ocr_res = trans_char_ocr_res(ocr_res)
     ocr_boxes = [box_4_2_poly_to_box_4_1(ori_ocr[0]) for ori_ocr in ocr_res]
-    
+
     if isinstance(table_engine, RapidTable):
         table_results = table_engine(img, ocr_res)
         html, polygons, table_rec_elapse = table_results.pred_html, table_results.cell_bboxes, table_results.elapse
         # Adjust polygon format to (x1, y1, x2, y2)
-        polygons = [[p[0], p[1], p[4], p[5]] for p in polygons] if polygons is not None else []
+        if polygons:
+            polygons = [[p[0], p[1], p[4], p[5]] if len(p) >= 6 else [] for p in polygons]
+            polygons = [p for p in polygons if len(p) == 4] #remove the empty lists
+        else:
+            polygons = []
     elif isinstance(table_engine, (WiredTableRecognition, LinelessTableRecognition)):
         html, table_rec_elapse, polygons, _, ocr_res = table_engine(
             img, ocr_result=ocr_res,
@@ -208,11 +212,12 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
             col_threshold=col_threshold,
             row_threshold=row_threshold
         )
-        if polygons is not None:
-            polygons = [[p[0], p[1], p[4], p[5]] for p in polygons]
+        if polygons:
+            polygons = [[p[0], p[1], p[4], p[5]] if len(p) >= 6 else [] for p in polygons]
+            polygons = [p for p in polygons if len(p) == 4] #remove the empty lists
         else:
             polygons = []
-    
+
     sum_elapse = time.time() - start
     all_elapse = (
         f"- table_type: {table_type}\n"
@@ -220,7 +225,7 @@ def process_image(img_input, small_box_cut_enhance, table_engine_type, char_ocr,
         f"- table rec cost: {table_rec_elapse:.5f}\n"
         f"- ocr cost: {det_cost + cls_cost + rec_cost:.5f}"
     )
-    
+
     # Convert image to RGB for display
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     table_boxes_img = plot_rec_box(img.copy(), polygons)
